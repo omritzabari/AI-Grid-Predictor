@@ -1,0 +1,16 @@
+# Databases
+*.sqlite
+*.db
+
+# Machine Learning Models
+*.pkl
+
+# Python cache
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Virtual Environments
+venv/
+env/
+.env
