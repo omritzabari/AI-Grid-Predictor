@@ -2,7 +2,7 @@
 
 
 
-!\[Dashboard Demo](assets/demoGif.mp4)
+<video src="https://raw.githubusercontent.com/omritzabari/AI-Grid-Predictor/main/assets/demoGif.mp4" autoplay loop muted playsinline width="100%"></video>
 
 
 
