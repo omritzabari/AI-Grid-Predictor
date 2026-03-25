@@ -2,7 +2,7 @@
 
 
 
-<video src="assets/demoGif.mp4" autoplay loop muted playsinline width="100%"></video>
+!\[Dashboard Demo](assets/demoGif.mp4)
 
 
 
