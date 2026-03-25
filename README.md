@@ -2,6 +2,10 @@
 
 
 
+<video src="assets/demoGif.mp4" autoplay loop muted playsinline width="100%"></video>
+
+
+
 \## Project Overview
 
 This project presents a complete, end-to-end Data Engineering and Machine Learning pipeline designed for grid load prediction. The system ingests historical electricity consumption telemetry and integrates it with weather data to train a highly accurate forecasting model. Utilizing advanced feature engineering, unsupervised learning (clustering), dimensionality reduction (PCA), and statistical inference, the project culminates in a real-time, interactive dashboard for load monitoring, prediction, and anomaly detection.
