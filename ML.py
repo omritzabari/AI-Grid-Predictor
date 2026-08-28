@@ -1,9 +1,17 @@
+import sqlite3
+
 import joblib
 import numpy as np
-from sklearn.model_selection import KFold, cross_val_score
+import pandas as pd
+from sklearn.model_selection import TimeSeriesSplit, cross_val_score
 from sklearn.linear_model import LinearRegression
 from sklearn.neighbors import KNeighborsRegressor
 from sklearn.metrics import mean_squared_error, r2_score
+
+# Longest look-back window used as a feature (lag_168h_consumption).
+# Used as the gap between train and test so that features at the seam
+# cannot reach back into the training period.
+LAG_HOURS = 168
 
 
 def load_preprocessed_data():
@@ -18,8 +26,47 @@ def load_preprocessed_data():
         exit()
 
 
+def load_naive_baseline(n_rows):
+    """
+    Load the 24-hour lag column, which is the naive baseline: predict that
+    consumption will be whatever it was at the same hour yesterday.
+
+    This also verifies the assumption TimeSeriesSplit depends on. TimeSeriesSplit
+    splits by ROW POSITION, not by date, so it is only meaningful if row order
+    equals chronological order. Rather than assume that, check it and fail loudly.
+    """
+    print("\n2. Loading the naive baseline and verifying chronological order...")
+    conn = sqlite3.connect('energy_db.sqlite')
+    df = pd.read_sql_query(
+        "SELECT Datetime, lag_24h_consumption FROM advanced_energy_data", conn)
+    conn.close()
+
+    if len(df) != n_rows:
+        raise ValueError(
+            f"Row mismatch: the database holds {len(df):,} rows but the PCA matrix "
+            f"holds {n_rows:,}. Re-run PCA.py so the two stay in sync."
+        )
+
+    if df['lag_24h_consumption'].isna().any():
+        raise ValueError(
+            "lag_24h_consumption contains missing values, so the baseline cannot "
+            "be scored. Re-run Build_DataBase.py."
+        )
+
+    timestamps = pd.to_datetime(df['Datetime'])
+    if not timestamps.is_monotonic_increasing:
+        raise ValueError(
+            "Rows in 'advanced_energy_data' are not in chronological order. "
+            "TimeSeriesSplit splits by row position, so the table must be sorted "
+            "by Datetime for this evaluation to mean anything."
+        )
+
+    print(f"   OK: {len(df):,} rows, {timestamps.iloc[0]} -> {timestamps.iloc[-1]}")
+    return df['lag_24h_consumption'].to_numpy()
+
+
 def find_optimal_k_for_knn(X, y, max_k=30):
-    print(f"\n2. Finding optimal K for KNN (Testing 1 to {max_k})...")
+    print(f"\n3. Finding optimal K for KNN (Testing 1 to {max_k})...")
     print("   [Using a 25% random sample of the massive dataset for speed]")
     best_k = 1
     best_score = -float('inf')
@@ -50,62 +97,65 @@ def find_optimal_k_for_knn(X, y, max_k=30):
     return best_k
 
 
-def evaluate_models(X, y, optimal_k):
-    print("\n3. Comparing Linear Regression vs. KNN on the FULL dataset (5-Fold CV)...")
-    print("   [This will take a moment, please wait...]")
-    kf = KFold(n_splits=5, shuffle=True, random_state=42)
+def evaluate_models(X, y, optimal_k, naive):
+    print("\n4. Comparing the naive baseline, Linear Regression and KNN...")
+    print(f"   [TimeSeriesSplit, 5 folds, gap={LAG_HOURS}h - always train on the past,")
+    print("    test on the future. Shuffling here would leak, because consecutive")
+    print("    hours are nearly identical and KNN would simply retrieve the answer.]")
 
-    lr_r2_scores, lr_rmse_scores = [], []
-    knn_r2_scores, knn_rmse_scores = [], []
+    tscv = TimeSeriesSplit(n_splits=5, gap=LAG_HOURS)
 
-    fold_number = 1
-    for train_index, test_index in kf.split(X):
-        print(f"   Processing Fold {fold_number}/5...")
+    labels = {
+        'naive': 'Naive baseline (same hour yesterday)',
+        'lr': 'Multiple Linear Regression',
+        'knn': f'K-Nearest Neighbors (K={optimal_k})',
+    }
+    scores = {name: {'r2': [], 'rmse': []} for name in labels}
+
+    def record(name, truth, prediction):
+        scores[name]['r2'].append(r2_score(truth, prediction))
+        scores[name]['rmse'].append(np.sqrt(mean_squared_error(truth, prediction)))
+
+    for fold_number, (train_index, test_index) in enumerate(tscv.split(X), start=1):
         X_train, X_test = X[train_index], X[test_index]
         y_train, y_test = y[train_index], y[test_index]
+        print(f"   Fold {fold_number}/5   train={len(train_index):,}   test={len(test_index):,}")
 
-        # Linear Regression (Using all PCA explanatory variables)
+        # Naive baseline - no model at all, just yesterday's value at this hour.
+        record('naive', y_test, naive[test_index])
+
         lr = LinearRegression()
         lr.fit(X_train, y_train)
-        lr_preds = lr.predict(X_test)
-        lr_r2_scores.append(r2_score(y_test, lr_preds))
-        lr_rmse_scores.append(np.sqrt(mean_squared_error(y_test, lr_preds)))
+        record('lr', y_test, lr.predict(X_test))
 
-        # KNN Regression
         knn = KNeighborsRegressor(n_neighbors=optimal_k, n_jobs=-1)
         knn.fit(X_train, y_train)
-        knn_preds = knn.predict(X_test)
-        knn_r2_scores.append(r2_score(y_test, knn_preds))
-        knn_rmse_scores.append(np.sqrt(mean_squared_error(y_test, knn_preds)))
+        record('knn', y_test, knn.predict(X_test))
 
-        fold_number += 1
+    order = ['naive', 'lr', 'knn']
 
-    print("\n" + "=" * 60)
-    print("FINAL OVERALL COMPARISON (Average of all 5 folds)")
-    print("=" * 60)
-    avg_lr_r2 = np.mean(lr_r2_scores) * 100
-    avg_lr_rmse = np.mean(lr_rmse_scores)
-    avg_knn_r2 = np.mean(knn_r2_scores) * 100
-    avg_knn_rmse = np.mean(knn_rmse_scores)
+    print("\n" + "=" * 72)
+    print("FINAL COMPARISON  (mean over 5 chronological folds)")
+    print("=" * 72)
+    for name in order:
+        mean_r2 = np.mean(scores[name]['r2']) * 100
+        mean_rmse = np.mean(scores[name]['rmse'])
+        print(f"{labels[name]:<38s}  R2 = {mean_r2:6.2f}%   RMSE = {mean_rmse:8.1f} MW")
 
-    print("1. Multiple Linear Regression:")
-    print(f"   Overall R-squared: {avg_lr_r2:.2f}%")
-    print(f"   Overall RMSE:      {avg_lr_rmse:.2f} MW\n")
-    print(f"2. K-Nearest Neighbors [KNN with K={optimal_k}]:")
-    print(f"   Overall R-squared: {avg_knn_r2:.2f}%")
-    print(f"   Overall RMSE:      {avg_knn_rmse:.2f} MW\n")
-
-    if avg_lr_r2 > avg_knn_r2:
-        print("OVERALL WINNER: Linear Regression (Surprising!)")
-    else:
-        print("OVERALL WINNER: K-Nearest Neighbors (KNN)")
-    print("=" * 60)
+    print("-" * 72)
+    print("Per-fold R2 (%). The first fold trains on the least data, so a low")
+    print("first value means the model is still data-hungry rather than broken:")
+    for name in order:
+        per_fold = "  ".join(f"{value * 100:5.1f}" for value in scores[name]['r2'])
+        print(f"   {labels[name]:<38s} {per_fold}")
+    print("=" * 72)
 
 
 def main():
     X, y = load_preprocessed_data()
+    naive = load_naive_baseline(len(X))
     optimal_k = find_optimal_k_for_knn(X, y, max_k=30)
-    evaluate_models(X, y, optimal_k)
+    evaluate_models(X, y, optimal_k, naive)
 
 
 if __name__ == "__main__":
