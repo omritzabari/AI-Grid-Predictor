@@ -57,7 +57,16 @@ def build_dataset():
     print("   -> Combining all years into a single dataset...")
     # Concatenate all the yearly dataframes into one massive dataframe
     df_weather = pd.concat(all_weather_data)
-
+    # --- FIX: normalize the weather index ---
+    # meteostat 2.x returns a MultiIndex (station, time); we only want the time level,
+    # and it has to be named 'Datetime' so the join below aligns with the energy data.
+    if isinstance(df_weather.index, pd.MultiIndex):
+        time_level = 'time' if 'time' in df_weather.index.names else df_weather.index.names[-1]
+        df_weather = df_weather.reset_index().set_index(time_level)
+    df_weather.index = pd.to_datetime(df_weather.index)
+    df_weather.index.name = 'Datetime'
+    df_weather = df_weather[~df_weather.index.duplicated(keep='first')]
+    print(f"   -> Weather index normalized: {len(df_weather):,} hourly records")
     # Select only the relevant weather columns: temperature, humidity, wind speed
     df_weather = df_weather[['temp', 'rhum', 'wspd']]
 
