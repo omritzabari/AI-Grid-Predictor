@@ -13,4 +13,16 @@ __pycache__/
 # Virtual Environments
 venv/
 env/
+.venv/
 .env
+
+# IDE / editor
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local archives
+*.zip
