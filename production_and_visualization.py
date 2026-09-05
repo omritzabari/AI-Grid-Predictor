@@ -1,9 +1,7 @@
 import joblib
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.model_selection import train_test_split
 from sklearn.neighbors import KNeighborsRegressor
-from sklearn.metrics import r2_score
 import os
 
 
@@ -32,8 +30,11 @@ def get_optimal_k():
 
 def visualize_model_accuracy(X, y, optimal_k):
     print(f"\n3. Generating Actual vs. Predicted scatter plot using KNN (K={optimal_k})...")
-    # Split data (80/20) just for the visualization plot
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.20, random_state=42)
+    # Chronological 80/20 hold-out: this is a time series, so a shuffled split
+    # would let the model see future hours while predicting the past and leak.
+    split_index = int(len(X) * 0.80)
+    X_train, X_test = X[:split_index], X[split_index:]
+    y_train, y_test = y[:split_index], y[split_index:]
 
     # Train the WINNING model
     model = KNeighborsRegressor(n_neighbors=optimal_k, n_jobs=-1)
@@ -41,7 +42,6 @@ def visualize_model_accuracy(X, y, optimal_k):
 
     # Make predictions
     y_pred = model.predict(X_test)
-    score = r2_score(y_test, y_pred)
 
     # Create the visualization
     plt.figure(figsize=(10, 6))
@@ -54,7 +54,9 @@ def visualize_model_accuracy(X, y, optimal_k):
     plt.plot([min_val, max_val], [min_val, max_val], color='red', linestyle='--', linewidth=2,
              label='Perfect Prediction ($y=x$)')
 
-    plt.title(f'10-Year Electricity Consumption: Actual vs. Predicted (KNN R-squared: {score * 100:.2f}%)', fontsize=14)
+    plt.title('Illustrative Actual vs. Predicted (KNN) on the Held-Out Final Period\n'
+              "Not the model's accuracy - the headline metric comes from ML.py's TimeSeriesSplit evaluation",
+              fontsize=12)
     plt.xlabel('Actual Consumption (MW)', fontsize=12)
     plt.ylabel('Predicted Consumption (MW)', fontsize=12)
     plt.legend()

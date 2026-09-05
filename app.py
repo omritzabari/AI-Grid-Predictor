@@ -53,8 +53,8 @@ def get_full_stats_data():
 
 # --- DATABASE HELPER FUNCTIONS ---
 def get_reference_datetime(target_dt):
-    """Maps future dates back to our dataset's timeline (<= 2018)."""
-    if target_dt.year > 2018:
+    """Maps future dates back to our dataset's timeline (which ends on 2017-12-31)."""
+    if target_dt.year > 2017:
         try:
             return target_dt.replace(year=2017)
         except ValueError:
@@ -70,7 +70,9 @@ def get_historical_lag(ref_datetime, hours_back):
                    (past_time.strftime('%Y-%m-%d %H:%M:%S'),))
     result = cursor.fetchone()
     conn.close()
-    return result[0] if result else 30000.0
+    # Return None when the timestamp is missing, so the caller can refuse to
+    # predict instead of silently using a made-up consumption value.
+    return result[0] if result else None
 
 
 def get_closest_weather_cluster(temp, hum, wind):
@@ -97,13 +99,42 @@ def fetch_historical_chart_data(ref_date, days=7):
     return df
 
 
-# --- CLUSTER NAMING DICTIONARY ---
-WEATHER_PROFILES = {
-    0: "Optimal & Mild",
-    1: "Hot & Humid (Summer Peak)",
-    2: "Cold & Harsh (Winter Peak)",
-    3: "Transitional & Breezy"
-}
+# --- CLUSTER NAMING (DERIVED FROM THE ACTUAL CENTROIDS) ---
+@st.cache_data
+def get_weather_profiles():
+    """Builds a readable label per weather cluster from its real centroid.
+
+    K-Means numbers the clusters arbitrarily on every re-run, so the labels are
+    derived from the data instead of being hardcoded.
+    """
+    conn = sqlite3.connect('energy_db.sqlite')
+    query = """
+        SELECT weather_cluster, AVG(temperature_c), AVG(humidity_percent), AVG(wind_speed)
+        FROM advanced_energy_data GROUP BY weather_cluster ORDER BY weather_cluster
+    """
+    cursor = conn.cursor()
+    centroids = cursor.execute(query).fetchall()
+    cursor.execute("SELECT AVG(temperature_c), AVG(humidity_percent), AVG(wind_speed) FROM advanced_energy_data")
+    mean_temp, mean_hum, mean_wind = cursor.fetchone()
+    conn.close()
+
+    # A centroid counts as high/low only if it sits clearly away from the
+    # overall mean, otherwise it is described as average.
+    def describe(value, mean_value, high_word, low_word, mid_word):
+        tolerance = abs(mean_value) * 0.10
+        if value >= mean_value + tolerance:
+            return high_word
+        if value <= mean_value - tolerance:
+            return low_word
+        return mid_word
+
+    profiles = {}
+    for cluster_id, avg_temp, avg_hum, avg_wind in centroids:
+        temp_word = describe(avg_temp, mean_temp, "Hot", "Cold", "Mild")
+        hum_word = describe(avg_hum, mean_hum, "Humid", "Dry", "Balanced")
+        wind_word = describe(avg_wind, mean_wind, "Windy", "Calm", "Breezy")
+        profiles[cluster_id] = f"{temp_word} & {hum_word} ({wind_word})"
+    return profiles
 
 
 # --- REUSABLE INPUT FORM ---
@@ -213,8 +244,20 @@ else:
 
         lag_24h = get_historical_lag(ref_dt, 24)
         lag_168h = get_historical_lag(ref_dt, 168)
+
+        # Without both historical anchors any prediction would be built on
+        # invented inputs, so refuse to forecast instead.
+        if lag_24h is None or lag_168h is None:
+            st.error(
+                f"No prediction can be made for **{ref_dt.strftime('%B %d, %Y - %H:%M')}**. "
+                "The model needs the actual grid load from 24 hours and 168 hours earlier, "
+                "and those historical values are not present in the dataset "
+                "(it covers 2008-01-08 through 2017-12-31). "
+                "Please pick another date or time.")
+            st.stop()
+
         weather_cluster = get_closest_weather_cluster(temp, hum, wind)
-        cluster_name = WEATHER_PROFILES.get(weather_cluster, f"Profile #{weather_cluster}")
+        cluster_name = get_weather_profiles().get(weather_cluster, f"Profile #{weather_cluster}")
 
         features = np.array([[temp, hum, wind, hour, day_of_week, month, day_of_year, is_weekend, season, lag_24h,
                               lag_168h, weather_cluster]])

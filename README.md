@@ -104,7 +104,7 @@ A naive baseline, Linear Regression and a KNN regressor are compared under `Time
 
 ### 7. Dashboard — `app.py`
 
-Streamlit + Plotly. The user picks a target date and weather conditions, and the app applies the saved scaler and PCA transform before calling the model. It also shows a 7-day historical trajectory and a live statistics panel querying SQLite directly.
+Streamlit + Plotly. The user picks a target date and weather conditions, and the app applies the saved scaler and PCA transform before calling the model. It also shows a 7-day historical trajectory and a live statistics panel querying SQLite directly. Cluster labels in the UI are derived from the actual per-cluster centroid means read back from the database, rather than hardcoded, since K-Means numbers its clusters arbitrarily on each run. When the historical lag values for a requested date are missing, the app reports that and declines to predict instead of substituting a placeholder.
 
 ---
 
@@ -112,7 +112,7 @@ Streamlit + Plotly. The user picks a target date and weather conditions, and the
 
 I went back over this project some time after building it. These two problems were serious enough to change what the results mean, so they were fixed rather than only documented.
 
-**Evaluation split.** The original version evaluated with `KFold(shuffle=True)`. On a time series this leaks: shuffling puts hour *t-1* into training and hour *t* into test, and since consecutive hours are nearly identical, KNN effectively retrieves the answer from its training set instead of predicting it. Replaced with `TimeSeriesSplit` — train on the past, test on the future — with a 168-hour gap between the two, so that lag features at the seam cannot reach back into the training period. `ML.py` now also verifies that rows are in chronological order before splitting, and fails loudly if they are not, since `TimeSeriesSplit` splits by row position rather than by date.
+**Evaluation split.** The original version evaluated with `KFold(shuffle=True)`. On a time series this leaks: shuffling puts hour *t-1* into training and hour *t* into test, and since consecutive hours are nearly identical, KNN effectively retrieves the answer from its training set instead of predicting it. Replaced with `TimeSeriesSplit` — train on the past, test on the future — with a 168-hour gap between the two, so that lag features at the seam cannot reach back into the training period. `ML.py` now also verifies that rows are in chronological order before splitting, and fails loudly if they are not, since `TimeSeriesSplit` splits by row position rather than by date. The illustrative actual-vs-predicted plot in `production_and_visualization.py` was moved to a chronological hold-out for the same reason.
 
 **No baseline.** The original version compared Linear Regression against KNN, with nothing to anchor either of them. Predicting "whatever consumption was at this hour yesterday" already reaches 78.6% R², which means a model scoring in the eighties is not automatically impressive. The baseline is now measured inside the same folds as the models, so the comparison is like for like.
 
@@ -140,7 +140,6 @@ These are still open. They are listed rather than quietly ignored, because knowi
 **Dashboard**
 
 - **The "uncertainty range" shown in the dashboard is the standard deviation of the neighbouring points, not a calibrated prediction interval.** It should not be read as a confidence band.
-- **The cluster labels in the UI are hardcoded,** while K-Means assigns cluster numbers arbitrarily on each run. A re-run can therefore relabel the clusters without anything visibly breaking.
 - **The order of the features is an implicit contract between the training script and the dashboard,** with nothing declaring or validating it. Adding a feature in one place and not the other would fail silently.
 
 ---
